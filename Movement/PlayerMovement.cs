@@ -1,13 +1,31 @@
 using System;
 using System.Collections;
 using UnityEngine;
-
 public class PlayerMovement : MonoBehaviour
 {
-	public PlayerData Data;
-	[SerializeField] private Animator anim;
-	#region COMPONENTS
-	public Rigidbody2D RB { get; private set; }
+	public PlayerData Data;//This is for linking PlayerData
+    private ShieldController shieldController;
+
+    #region ANIMATIONS
+    Animator anim;
+    private string currentState;
+    private string PLAYER_IDLE = "idle";
+    private string PLAYER_RUN = "run";
+    private string PLAYER_JUMP = "jump";
+    private string PLAYER_FALL = "fall";
+    //private string PLAYER_LAND = "land";
+    //private string PLAYER_DASH = "dash";
+    //private string PLAYER_ROLL = "roll";
+    //private string PLAYER_HURT = "hurt";
+	//private string PLAYER_WALLSLIDE = "slide";
+	private string PLAYER_WALLHANG = "hang";
+    //private string PLAYER_ATTACK = "attack";
+    //private string PLAYER_ATTACK2 = "attack2";
+    //private string PLAYER_ATTACK3 = "attack3";
+	#endregion
+
+    #region COMPONENTS
+    public Rigidbody2D RB { get; private set; }
 	//public PlayerAnimator AnimHandler { get; private set; }
 	#endregion
 
@@ -22,12 +40,15 @@ public class PlayerMovement : MonoBehaviour
 	public float LastOnWallRightTime { get; private set; }
 	public float LastOnWallLeftTime { get; private set; }
 
-	
+	public bool IsGrounded;
+	public bool IsOnRightWall;
+	public bool IsOnLeftWall;
+
+
 
 	//Jump
 	private bool _isJumpCut;
 	private bool _isJumpFalling;
-	private bool _isGrounded;
 
 	//Wall Jump
 	private float _wallJumpStartTime;
@@ -38,6 +59,7 @@ public class PlayerMovement : MonoBehaviour
 	private bool _dashRefilling;
 	private Vector2 _lastDashDir;
 	private bool _isDashAttacking;
+	private bool _isRolling;
 
 	#endregion
 
@@ -70,14 +92,14 @@ public class PlayerMovement : MonoBehaviour
 	private void Start()
 	{
 		anim = GetComponent<Animator>();
+		shieldController = GetComponent<ShieldController>();
 		SetGravityScale(Data.gravityScale);
 		IsFacingRight = true;
-		_isGrounded = true;
 	}
 
 	private void Update()
 	{
-		
+       
 		#region TIMERS
 		LastOnGroundTime -= Time.deltaTime;
 		LastOnWallTime -= Time.deltaTime;
@@ -107,20 +129,35 @@ public class PlayerMovement : MonoBehaviour
 
 		}
 
-		if (Input.GetKeyDown(KeyCode.LeftShift))
+        if (IsSliding)
+		{
+            Slide();
+        }
+            
+		if(Input.GetKeyDown(KeyCode.Z))
+		{
+			shieldController.ActivateShield();
+		}
+
+        AnimationUpdater();
+
+        /*if (Input.GetKeyDown(KeyCode.LeftShift))
 		{
 			OnDashInput();
-		}
-		#endregion
+		}*/
+        #endregion
 
-		#region COLLISION CHECKS
-		if (!IsDashing && !IsJumping)
+        #region COLLISION CHECKS
+
+        IsGrounded = Physics2D.OverlapBox(_groundCheckPoint.position, _groundCheckSize, 0, _groundLayer);
+        IsOnRightWall = Physics2D.OverlapBox(_frontWallCheckPoint.position, _wallCheckSize, 0, _groundLayer);
+        IsOnLeftWall = Physics2D.OverlapBox(_backWallCheckPoint.position, _wallCheckSize, 0, _groundLayer);
+        if (!IsDashing && !IsJumping)
 		{
 			//Ground Check
 			if (Physics2D.OverlapBox(_groundCheckPoint.position, _groundCheckSize, 0, _groundLayer)) //checks if set box overlaps with ground
 			{
 
-				_isGrounded = true;
 				LastOnGroundTime = Data.coyoteTime; //if so sets the lastGrounded to coyoteTime
 			}
 
@@ -163,7 +200,7 @@ public class PlayerMovement : MonoBehaviour
 		if (!IsDashing)
 		{
 			//Jump
-			if (CanJump() && LastPressedJumpTime > 0 && _isGrounded)
+			if (CanJump() && LastPressedJumpTime > 0)
 			{
 				IsJumping = true;
 				IsWallJumping = false;
@@ -172,7 +209,6 @@ public class PlayerMovement : MonoBehaviour
 				Jump();
 
 
-				//jump anim
 			}
 			//WALL JUMP
 			else if (CanWallJump() && LastPressedJumpTime > 0)
@@ -186,7 +222,6 @@ public class PlayerMovement : MonoBehaviour
 				_lastWallJumpDir = (LastOnWallRightTime > 0) ? -1 : 1;
 
 				WallJump(_lastWallJumpDir);
-				//wall jump anim
 			}
 		}
 		#endregion
@@ -203,7 +238,10 @@ public class PlayerMovement : MonoBehaviour
 			else
 				_lastDashDir = IsFacingRight ? Vector2.right : Vector2.left;
 
-
+			if(IsGrounded)
+			{
+                _isRolling = true;
+            }
 
 			IsDashing = true;
 			IsJumping = false;
@@ -211,12 +249,11 @@ public class PlayerMovement : MonoBehaviour
 			_isJumpCut = false;
 
 			StartCoroutine(nameof(StartDash), _lastDashDir);
-			//dash anim
 		}
 		#endregion
 
 		#region IS SLIDE PERFORMABLE CHECK
-		if (CanSlide() && ((LastOnWallLeftTime > 0 && _moveInput.x < 0) || (LastOnWallRightTime > 0 && _moveInput.x > 0)))
+		if (CanSlide() && !IsGrounded && (_moveInput.x != 0))
 			IsSliding = true;
 		else
 			IsSliding = false;
@@ -266,8 +303,6 @@ public class PlayerMovement : MonoBehaviour
 			SetGravityScale(0);
 		}
 		#endregion
-
-		UpdateAnimation();
 	}
 
 	private void FixedUpdate()
@@ -285,54 +320,49 @@ public class PlayerMovement : MonoBehaviour
 		{
 			Run(Data.dashEndRunLerp);
 		}
-
-		//Handle Slide
-		if (IsSliding)
-			Slide();
-		//roll anim
 	}
 
-	private void UpdateAnimation()
+    private void ChangeAnimationState(string newState)
     {
-		//Run anim
-		if (_moveInput.y == 0f)
+        if (currentState == newState) return;
+        anim.Play(newState);
+        currentState = newState;
+    }
+
+	private void AnimationUpdater()
+	{
+		if (IsGrounded)
 		{
-            if (_moveInput.x != 0f)
-            {
-				anim.SetBool("running", true);
-				anim.SetBool("idling", false);
-				anim.SetBool("rolling", false);
-				anim.SetBool("jumping", false);
+			if(_moveInput.x != 0)
+			{
+                ChangeAnimationState(PLAYER_RUN);
+            }
+            else if (_moveInput.x == 0)
+			{
+                ChangeAnimationState(PLAYER_IDLE);
+            }
+        }
+		else if (!IsGrounded)
+		{
+			  if (IsJumping)
+			{
+                ChangeAnimationState(PLAYER_JUMP);
+            }
+			 else if (_isJumpFalling && !IsSliding)
+			{
+				ChangeAnimationState(PLAYER_FALL);
 			}
-			else if(_moveInput.x == 0f)
+			  else if (IsSliding)
             {
-				anim.SetBool("idling", true);
-				anim.SetBool("running", false);
-				anim.SetBool("rolling", false);
-				anim.SetBool("jumping", false);
-			}
-			else if (IsDashing)
-            {
-				anim.SetBool("rolling", true);
-				anim.SetBool("running", false);
-				anim.SetBool("idling", false);
-				anim.SetBool("jumping", false);
-			}
-			else if (IsJumping)
-            {
-				anim.SetBool("jumping", true);
-				anim.SetBool("running", false);
-				anim.SetBool("rolling", false);
-				anim.SetBool("idling", false);
-			}
-			
-		}
-	
-	}
+                    ChangeAnimationState(PLAYER_WALLHANG);
+            }
+        }
+        
+
+    }
 
 
-
-    #region INPUT CALLBACKS
+    #region INPUT CALLBACK
     //Methods which whandle input detected in Update()
     public void OnJumpInput()
 	{
@@ -437,7 +467,6 @@ public class PlayerMovement : MonoBehaviour
 
 		LastPressedJumpTime = 0;
 		LastOnGroundTime = 0;
-		_isGrounded = false;
 		float force = Data.jumpForce;
 		if (RB.velocity.y < 0)
 			force -= RB.velocity.y;
@@ -516,16 +545,7 @@ public class PlayerMovement : MonoBehaviour
 
 	private void Slide()
 	{
-		if (RB.velocity.y > 0)
-		{
-			RB.AddForce(-RB.velocity.y * Vector2.up, ForceMode2D.Impulse);
-		}
-		float speedDif = Data.slideSpeed - RB.velocity.y;
-		float movement = speedDif * Data.slideAccel;
-
-		movement = Mathf.Clamp(movement, -Mathf.Abs(speedDif) * (1 / Time.fixedDeltaTime), Mathf.Abs(speedDif) * (1 / Time.fixedDeltaTime));
-
-		RB.AddForce(movement * Vector2.up);
+		RB.velocity = new Vector2(RB.velocity.x, Mathf.Clamp(RB.velocity.y, -12, float.MaxValue));
 	}
 	#endregion
 
@@ -540,7 +560,7 @@ public class PlayerMovement : MonoBehaviour
 
 	private bool CanJump()
 	{
-		return (LastOnGroundTime > 0) && !IsJumping && _isGrounded;
+		return (LastOnGroundTime > 0) && !IsJumping;
 	}
 
 	private bool CanWallJump()
